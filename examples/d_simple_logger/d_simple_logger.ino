@@ -27,9 +27,10 @@
 #include <SDI12.h>
 
 #define SERIAL_BAUD 115200 /*!< The baud rate for the output serial port */
-#define DATA_PIN 7         /*!< The pin of the SDI-12 data bus */
-#define POWER_PIN 22       /*!< The sensor power pin (or -1 if not switching power) */
+#define DATA_PIN 12         /*!< The pin of the SDI-12 data bus */
+#define POWER_PIN -1       /*!< The sensor power pin (or -1 if not switching power) */
 #define WAKE_DELAY 0       /*!< Extra time needed for the sensor to wake (0-100ms) */
+
 
 /** Define the SDI-12 bus */
 SDI12 mySDI12(DATA_PIN);

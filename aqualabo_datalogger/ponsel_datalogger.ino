@@ -8,7 +8,6 @@ it has been designed and tested for up to 3 Aqualabo Ponsel Sensors. More/Fewer 
 function and sensor addresses. The program outputs the data to csv format. 
 */
 
-#include <SD.h>
 #include <SDI12.h>
 #include <RTClib.h>
 #include <Wire.h>
@@ -290,6 +289,7 @@ void loop() {
     }
   }
     // Write the measurement to the CSV file
+    dataFile.print("Sensor ");
     dataFile.print(",");
     dataFile.print(measurement);
 
