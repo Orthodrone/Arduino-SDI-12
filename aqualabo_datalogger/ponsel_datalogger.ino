@@ -4,46 +4,23 @@ Created by Christine Avery for
 Based on the work by EnviroDIY
 
 This program is a basic data logger for SDI-12-based environmental sensors. Although it can be used with any sensor using SDI-12,
-it has been designed and tested for up to 3 Aqualabo Ponsel Sensors. More/Fewer sensors can be added by adjusting the numSensors 
-function and sensor addresses. The program outputs the data to csv format. 
+it has been designed and tested for up to 3 Aqualabo Ponsel Sensors. The measurement is started/stopped with the receipt of an external PWM signal. 
 */
 
 #include <SDI12.h>
-#include <RTClib.h>
-#include <Wire.h>
 
-#define SERIAL_BAUD 115200 //Set baud rate, 115200 for SDI-12
-#define DATA_PIN 7 //Set SDI-12 bus data pin
-#define POWER_PIN -1 //Set power pin, we are using the 5V pin for power so we set the power pin to -1
-#define PWM_PIN 3 //Sets PWM in pin
+#define SERIAL_BAUD 115200 /*!< The baud rate for the output serial port */
+#define DATA_PIN 8         /*!< The pin of the SDI-12 data bus */
+#define POWER_PIN -1       /*!< The sensor power pin (or -1 if not switching power) */
+#define WAKE_DELAY 0       /*!< Extra time needed for the sensor to wake (0-100ms) */
+#define PWM_PIN 13         /*!< Pin for PWM input*/
 
-File dataFile; //define the file object for storing data
 
-//Define SDI-12 bus using data pin above
-SDI12 mySDI12(DATA_PIN)
+/** Define the SDI-12 bus */
+SDI12 mySDI12(DATA_PIN);
 
 // keeps track of active addresses
 bool isActive[64] = {
-  0,
-};
-
-// keeps track of the wait time for each active addresses
-uint8_t meas_time_ms[64] = {
-  0,
-};
-
-// keeps track of the time each sensor was started
-uint32_t millisStarted[64] = {
-  0,
-};
-
-// keeps track of the time each sensor will be ready
-uint32_t millisReady[64] = {
-  0,
-};
-
-// keeps track of the number of results expected
-uint8_t returnedResults[64] = {
   0,
 };
 
@@ -78,8 +55,6 @@ char decToChar(byte i) {
     return i;
 }
 
-RTC_DS1307 rtc; /*defines RTC object, the arduino RT clock, used for timestamping the data log*/
-
 /**
  * @brief gets identification information from a sensor, and prints it to the serial
  * port
@@ -90,7 +65,7 @@ void printInfo(char i) {
   String command = "";
   command += (char)i;
   command += "I!";
-  mySDI12.sendCommand(command);
+  mySDI12.sendCommand(command, WAKE_DELAY);
   delay(100);
 
   String sdiResponse = mySDI12.readStringUntil('\n');
@@ -121,7 +96,7 @@ bool getResults(char i, int resultsExpected) {
     command += "D";
     command += cmd_number;
     command += "!";  // SDI-12 command to get data [address][D][dataOption][!]
-    mySDI12.sendCommand(command);
+    mySDI12.sendCommand(command, WAKE_DELAY);
 
     uint32_t start = millis();
     while (mySDI12.available() < 3 && (millis() - start) < 1500) {}
@@ -151,38 +126,55 @@ bool getResults(char i, int resultsExpected) {
   return resultsReceived == resultsExpected;
 }
 
-int startConcurrentMeasurement(char i, String meas_type = "") {
+bool takeMeasurement(char i, String meas_type = "") {
   mySDI12.clearBuffer();
   String command = "";
   command += i;
-  command += "C";
+  command += "M";
   command += meas_type;
-  command += "!";  // SDI-12 concurrent measurement command format  [address]['C'][!]
-  mySDI12.sendCommand(command);
-  delay(30);
+  command += "!";  // SDI-12 measurement command format  [address]['M'][!]
+  mySDI12.sendCommand(command, WAKE_DELAY);
+  delay(100);
+
+  Serial.print(command);
+  Serial.print(", ");
 
   // wait for acknowlegement with format [address][ttt (3 char, seconds)][number of
   // measurments available, 0-9]
   String sdiResponse = mySDI12.readStringUntil('\n');
   sdiResponse.trim();
 
+  String addr = sdiResponse.substring(0, 1);
+  Serial.print(addr);
+  Serial.print(", ");
+
   // find out how long we have to wait (in seconds).
   uint8_t wait = sdiResponse.substring(1, 4).toInt();
+  Serial.print(wait);
+  Serial.print(", ");
 
   // Set up the number of results to expect
   int numResults = sdiResponse.substring(4).toInt();
+  Serial.print(numResults);
+  Serial.print(", ");
 
-  uint8_t sensorNum = charToDec(i);  // e.g. convert '0' to 0, 'a' to 10, 'Z' to 61.
-  meas_time_ms[sensorNum]  = wait;
-  millisStarted[sensorNum] = millis();
-  if (wait == 0) {
-    millisReady[sensorNum] = millis();
-  } else {
-    millisReady[sensorNum] = millis() + wait * 1000;
+  unsigned long timerStart = millis();
+  while ((millis() - timerStart) < (1000UL * (wait + 1))) {
+    if (mySDI12.available())  // sensor can interrupt us to let us know it is done early
+    {
+      Serial.print(millis() - timerStart);
+      Serial.print(", ");
+      mySDI12.clearBuffer();
+      break;
+    }
   }
-  returnedResults[sensorNum] = numResults;
+  // Wait for anything else and clear it out
+  delay(30);
+  mySDI12.clearBuffer();
 
-  return numResults;
+  if (numResults > 0) { return getResults(i, numResults); }
+
+  return true;
 }
 
 // this checks for activity at a particular address
@@ -194,7 +186,7 @@ boolean checkActive(char i) {
   myCommand += "!";
 
   for (int j = 0; j < 3; j++) {  // goes through three rapid contact attempts
-    mySDI12.sendCommand(myCommand);
+    mySDI12.sendCommand(myCommand, WAKE_DELAY);
     delay(100);
     if (mySDI12.available()) {  // If we here anything, assume we have an active sensor
       mySDI12.clearBuffer();
@@ -206,26 +198,29 @@ boolean checkActive(char i) {
 }
 
 void setup() {
-    Serial.begin(SERIAL_BAUD);
-    while (!Serial);
-    Serial.println("Opening SDI-12 bus...");
-    mySDI12.begin();
-    delay(500); // allow things to settle
+  Serial.begin(SERIAL_BAUD);
+  while (!Serial)
+    ;
 
-    Serial.println("Timeout Value: ");
-    Serial.println(mySDI12.TIMEOUT);
+  Serial.println("Opening SDI-12 bus...");
+  mySDI12.begin();
+  delay(500);  // allow things to settle
 
-// Power the sensors;
+  Serial.println("Timeout value: ");
+  Serial.println(mySDI12.TIMEOUT);
+
+  // Power the sensors;
   if (POWER_PIN > 0) {
-    Serial.println("Powering up sensors...");
+    Serial.println("Powering up sensors, wait...");
     pinMode(POWER_PIN, OUTPUT);
     digitalWrite(POWER_PIN, HIGH);
-    delay(200);
+    delay(15000L);
+    // delay(200);
   }
 
   // Quickly Scan the Address Space
   Serial.println("Scanning all addresses, please wait...");
-  Serial.println("Protocol Version, Sensor Address, Sensor Vendor, Sensor Model, "
+  Serial.println("Sensor Address, Protocol Version, Sensor Vendor, Sensor Model, "
                  "Sensor Version, Sensor ID");
 
   for (byte i = 0; i < 62; i++) {
@@ -247,64 +242,33 @@ void setup() {
   }
 
   Serial.println();
-  Serial.println("Time Elapsed (s), Measurement 1, Measurement 2, ... etc.");
+  Serial.println("Time Elapsed (s), Measurement Type, Sensor Address, Est Measurement "
+                 "Time (s), Number Measurements, "
+                 "Real Measurement Time (ms), Measurement 1, Measurement 2, ... etc.");
   Serial.println(
     "-------------------------------------------------------------------------------");
+  pinMode(PWM_PIN, INPUT);						          // initialising PWM_PIN as an input pin
+	Serial.begin(115200);						            // serial begin at 115200 bauds
+	Serial.println ("PWM Control ready...");
 }
 
 void loop() {
-     // Get the current timestamp
-  String timestamp = getDateTimeString();
-
-  // Open the data file in append mode
-  dataFile = SD.open(getDateTimeString() + ".csv", FILE_WRITE);
-
-  // Write the timestamp to the CSV file
-  dataFile.print(timestamp);
-
-   // start all sensors measuring concurrently
-  for (byte i = 0; i < 62; i++) {
-    char addr = decToChar(i);
-    if (isActive[i]) { startConcurrentMeasurement(addr); }
-  }
-
-  // get all readings
-  uint8_t numReadingsRecorded = 0;
-  while (numReadingsRecorded < numSensors) {
-    for (byte i = 0; i < 62; i++) {
-      char addr = decToChar(i);
-      if (isActive[i]) {
-        if (millis() > millisReady[i]) {
-          if (returnedResults[i] > 0) {
-            Serial.print(millis() / 1000);
-            Serial.print(", ");
-            Serial.print(addr);
-            Serial.print(", ");
-            getResults(addr, returnedResults[i]);
-            Serial.println();
-          }
-          numReadingsRecorded++;
+  while pulseIn(PWM_PIN, HIGH); {
+    String commands[] = {"", "1", "2", "3", "4", "5", "6", "7", "8", "9"};
+    for (uint8_t a = 0; a < 1; a++) {
+      // measure one at a time
+      for (byte i = 0; i < 62; i++) {
+        char addr = decToChar(i);
+        if (isActive[i]) {
+          // Serial.print(millis() / 1000);
+          Serial.print(millis());
+          Serial.print(", ");
+          takeMeasurement(addr, commands[a]);
+          Serial.println();
         }
       }
     }
   }
-    // Write the measurement to the CSV file
-    dataFile.print("Sensor ");
-    dataFile.print(",");
-    dataFile.print(measurement);
 
-    // Print the measurement to the serial monitor for debugging
-    Serial.print("Sensor ");
-    Serial.print(i + 1);
-    Serial.print(": ");
-    Serial.println(measurement);
-
-  // End the line in the CSV file
-  dataFile.println();
-
-  // Close the file
-  dataFile.close();
-
-  // Delay between measurements
-  delay(10000);  
+  delay(10000L);  // wait ten seconds between measurement attempts.
 }
